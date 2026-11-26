@@ -45,18 +45,19 @@ class DAQ_Move_Keithley2600(DAQ_Move_base):
     """
 
     # General parameters
-    is_multiaxes = False
-    _axis_names: Union[List[str], Dict[str, int]] = ["Source"]
-    _controller_units: Union[str, List[str]] = "V"
-    _epsilon: Union[float, List[float]] = 0.01
+    is_multiaxes = True
+    _axis_names: Union[List[str], Dict[str, int]] = ["Voltage", "Current"]
+    _controller_units: Union[str, List[str]] = ["V", "A"]
+    _epsilons: Union[float, List[float]] = [0.01, 1e-6]
     data_actuator_type = DataActuatorType.DataActuator
 
     # Parameter tree
-    params = comon_parameters_fun(is_multiaxes, axis_names=_axis_names, epsilon=_epsilon) + [
+    params = comon_parameters_fun(is_multiaxes, axis_names=_axis_names, epsilon=_epsilons) + [
             _build_param("resource_name", "VISA resource", "list", "", limits=get_VISA_resources()),
             _build_param("channel", "Channel", "str", "A"),
             _build_param("autorange", "Autorange", "bool", True),
-            _build_param("type", "Source type", "list", "", limits=["Voltage", "Current"]),
+            _build_param("current_limit", "Current limit (A)", "float", "0.0001"),
+            _build_param("voltage_limit", "Voltage limit (V)", "float", "100"),
             ]
 
 
@@ -64,45 +65,20 @@ class DAQ_Move_Keithley2600(DAQ_Move_base):
         # For autocompletion
         self.controller: Keithley2600VISADriver = None
         self.channel: Keithley2600Channel = None
-        self._meas_function: Callable = None
-        self._move_function: Callable[float] = None
-
 
     @property
-    def v_source(self):
-        """Returns True if source type is set to voltage."""
-        return self.settings["type"] == "Voltage"
-
+    def move_function(self):
+        if self.axis_name == "Voltage":
+            return self.channel.sourceV
+        elif self.axis_name == "Current":
+            return self.channel.sourceI
 
     @property
-    def i_source(self):
-        """Returns True if source is type set to current."""
-        return self.settings["type"] == "Current"
-
-
-    def _set_source_type(self):
-        """Adjust units and control function according to the selected source type."""
-
-        # Voltage source
-        if self.v_source:
-            self.axis_unit = "V"
-            self._meas_function = self.channel.measureV
-            self._move_function = self.channel.sourceV
-
-        # Current source
-        elif self.i_source:
-            self.axis_unit = "A"
-            self._meas_function = self.channel.measureI
-            self._move_function = self.channel.sourceI
-
-        # Unknown source type
-        else:
-            source_type = self.settings["type"]
-            raise ValueError(f"Unknown source type: {source_type}")
-
-        # Update displayed value
-        self.current_value = self._meas_function()
-        self.emit_value(self.current_value)
+    def meas_function(self):
+        if self.axis_name == "Voltage":
+            return self.channel.measureV
+        elif self.axis_name == "Current":
+            return self.channel.measureI
 
 
     def get_actuator_value(self):
@@ -112,7 +88,7 @@ class DAQ_Move_Keithley2600(DAQ_Move_base):
         -------
         float: The position obtained after scaling conversion.
         """
-        pos = DataActuator(data=self._meas_function(), units=self.axis_unit)
+        pos = DataActuator(data=self.meas_function(), units=self.axis_unit)
         pos = self.get_position_with_scaling(pos)
         return pos
 
@@ -147,9 +123,11 @@ class DAQ_Move_Keithley2600(DAQ_Move_base):
         val = param.value()
         unit = param.opts.get("suffix")
 
-        # Change parameters in function of source type
-        if name == "type":
-            self._set_source_type()
+        if name == "current_limit":
+            self.channel.Ilimit = val
+
+        if name == "voltage_limit":
+            self.channel.Vlimit = val
 
 
     def ini_stage(self, controller=None):
@@ -186,9 +164,6 @@ class DAQ_Move_Keithley2600(DAQ_Move_base):
         # Initialize channel
         self.channel = self.controller.create_channel(channel_name=channel,
                                                       autorange=autorange)
-
-        # Change parameters in function of source type
-        self._set_source_type()
         
         # Initialization successful
         info = "Keithey 2600 initialization finished."
@@ -205,7 +180,7 @@ class DAQ_Move_Keithley2600(DAQ_Move_base):
         value = self.check_bound(value)  #if user checked bounds, the defined bounds are applied here
         self.target_value = value
         value = self.set_position_with_scaling(value)  # apply scaling if the user specified one
-        self._move_function(value.value(self.axis_unit))
+        self.move_function(value.value(self.axis_unit))
         self.emit_status(ThreadCommand('Update_Status', [f"Moving abs to {value}"]))
 
 
@@ -219,7 +194,7 @@ class DAQ_Move_Keithley2600(DAQ_Move_base):
         value = self.check_bound(self.current_position + value) - self.current_position
         self.target_value = value + self.current_position
         value = self.set_position_relative_with_scaling(value)
-        self._move_function(self.target_value.value(self.axis_unit))
+        self.move_function(self.target_value.value(self.axis_unit))
         self.emit_status(ThreadCommand('Update_Status', [f"Moving ref by {value}"]))
 
 
